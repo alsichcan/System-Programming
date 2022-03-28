@@ -87,8 +87,8 @@ void *malloc(size_t size){
   ptr = mallocp(size);
   n_malloc += 1;
 
-  alloc(list, ptr, size);
-  n_allocb += size;
+  item* i = alloc(list, ptr, size);
+  n_allocb += i->size;
 
   LOG_MALLOC(size, ptr);
 
