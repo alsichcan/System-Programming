@@ -54,9 +54,9 @@ void init(void)
 __attribute__((destructor))
 void fini(void)
 {
-  // ...
+  unsigned long n_alloc = n_malloc + n_calloc + n_realloc;
 
-  LOG_STATISTICS(0L, 0L, 0L);
+  LOG_STATISTICS(n_allocb, (n_allocb/n_alloc), 0L);
 
   LOG_STOP();
 
@@ -65,3 +65,38 @@ void fini(void)
 }
 
 // ...
+void *malloc(size_t size){
+  char *error;
+  void *ptr;
+
+  if (!mallocp){
+    mallocp = dlsym(RTLD_NEXT, "malloc");
+    if((error = dlerror()) != NULL){
+      fputs(error, stderr);
+      exit(1);
+    }
+  }
+
+  ptr = mallocp(size);
+  n_malloc += 1;
+  n_allocb += size;
+  LOG_MALLOC(size, ptr);
+  return ptr;
+}
+
+void free(void* ptr){
+  char *error;
+  void *ptr;
+
+  if (!mallocp){
+    freep = dlsym(RTLD_NEXT, "free");
+    if((error = dlerror()) != NULL){
+      fputs(error, stderr);
+      exit(1);
+    }
+  }
+
+  free(ptr);
+  //n_freeb += size;
+  LOG_FREE(ptr);
+}
