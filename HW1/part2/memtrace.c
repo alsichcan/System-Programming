@@ -32,6 +32,11 @@ static unsigned long n_freeb   = 0;
 static item *list = NULL;
 
 //
+// Self-made method
+//
+static void nonfreed_list(item* list);
+
+//
 // init - this function is called once when the shared library is loaded
 //
 __attribute__((constructor))
@@ -56,7 +61,9 @@ void fini(void)
 {
   unsigned long n_alloc = n_malloc + n_calloc + n_realloc;
 
-  LOG_STATISTICS(n_allocb, (n_allocb/n_alloc), 0L);
+  LOG_STATISTICS(n_allocb, (n_allocb/n_alloc), n_freeb);
+
+  nonfreed_list(list);
 
   LOG_STOP();
 
@@ -79,8 +86,12 @@ void *malloc(size_t size){
 
   ptr = mallocp(size);
   n_malloc += 1;
+
+  alloc(list, ptr, size);
   n_allocb += size;
+
   LOG_MALLOC(size, ptr);
+
   return ptr;
 }
 
@@ -96,6 +107,10 @@ void free(void* ptr){
   }
 
   freep(ptr);
+
+  item* i = dealloc(list, ptr);
+  n_freeb += i->size;
+  
   LOG_FREE(ptr);
 }
 
@@ -113,8 +128,12 @@ void *calloc(size_t nmemb, size_t size){
 
   ptr = callocp(nmemb, size);
   n_calloc += 1;
-  n_allocb += nmemb * size;
-  LOG_CALLOC(nmemb,size, ptr);
+
+  item* i = alloc(list, ptr, nmemb * size);
+  n_allocb += i->size;
+
+  LOG_CALLOC(nmemb, size, ptr);
+  
   return ptr;
 }
 
@@ -132,7 +151,44 @@ void *realloc(void *ptr, size_t size){
 
   rptr = reallocp(ptr, size);
   n_realloc += 1;
-  n_allocb += size;
+
+  item* i1 = dealloc(list, ptr);
+  n_freeb += i1->size;
+  item* i2 = alloc(list, rptr, size);
+  n_allocb += i2->size;
+
   LOG_REALLOC(ptr, size, rptr);
+
   return rptr;
+}
+
+void nonfreed_list(item* list){
+  int num = 0;
+  char *error;
+
+  if (!freep){
+    freep = dlsym(RTLD_NEXT, "free");
+    if((error = dlerror()) != NULL){
+      fputs(error, stderr);
+      exit(1);
+    }
+  }
+
+  item *prev, *cur, *i;
+  if(list == NULL) return;
+  
+  prev = list;
+  cur = list->next;
+
+  while(cur != NULL){
+    if(cur->cnt > 0){
+      if(num == 0) LOG_NONFREED_START();
+      LOG_BLOCK(cur->ptr, cur->size, cur->cnt);
+      num++;
+    }
+    prev = cur;
+    cur = cur->next;
+  }
+
+  return;
 }
