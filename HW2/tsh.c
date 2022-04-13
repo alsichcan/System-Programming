@@ -1,7 +1,7 @@
 /* 
  * tsh - A tiny shell program with job control
  * 
- * <Put your student number and login ID here>
+ * 2017-15108
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -133,7 +133,7 @@ int main(int argc, char **argv)
 
 	/* Read command line */
 	if (emit_prompt) {
-	    printf("%s", prompt);
+        printf("%s", prompt);
 	    fflush(stdout);
 	}
 	if ((fgets(cmdline, MAXLINE, stdin) == NULL) && ferror(stdin))
@@ -142,7 +142,6 @@ int main(int argc, char **argv)
 	    fflush(stdout);
 	    exit(0);
 	}
-
 	/* Evaluate the command line */
 	eval(cmdline);
 	fflush(stdout);
@@ -165,7 +164,54 @@ int main(int argc, char **argv)
 */
 void eval(char *cmdline) 
 {
-    return;
+    // 0. Local Variable
+    char* argv[MAXARGS];     /* holds arguments of command line */
+    int bg;                  /* background job? */
+    sigset_t blocked;        /* blocked signals */
+    pid_t pid;               /* process id */
+
+    // 1. Parse & Check cmd
+    bg = parseline(cmdline, argv);
+    if(bg == 1 && argv[0] == NULL) return; // blank line인 경우 종료
+    if(builtin_cmd(argv)) return; // builtin_cmd인 경우 command 실행
+    
+    // 2. Block SIGCHLD Signal
+    if(sigemptyset(&blocked) == -1) app_error("sigemptyset error"); // init
+    if(sigaddset(&blocked, SIGCHLD) == -1) app_error("sigaddset error"); // add
+    if(sigprocmask(SIG_BLOCK, &blocked, NULL) == -1) app_error("sigprocmask error"); // block
+
+    // Loads and runs in the context of an initial child process
+    // 3. Create Child Process
+    pid = fork();
+
+    if(pid == 0){
+        /* Child Process */
+        // 3.1 1) Unblock signal
+        if(sigprocmask(SIG_UNBLOCK, &blocked, NULL) == -1) app_error("sigprocmask Error");
+
+        // 3.1 2) Get new process group ID
+        if(setpgid(0, 0) == -1) app_error("setpgid Error");
+
+        // 3.1 3) Load & run new program
+        if(execve(argv[0], argv, environ) < 0){
+            printf("%s: Command not found\n", argv[0]);
+            exit(0);
+        }
+    }else{
+        /* Parent Process */
+        // 3.2. 1) Addjob
+        // 3.2. 2) Unblock signal
+        // 3.3. 3) (if bg) print log message
+        if(!bg){  /* parent waits for fg job to terminate */
+            addjob(jobs, pid, FG, cmdline);
+            if(sigprocmask(SIG_UNBLOCK, &blocked, NULL) == -1) app_error("SIG_UNBLOCK Error");
+            waitfg(pid);
+        } else{   /* otherwise, don't wait for bg job */
+            addjob(jobs, pid, BG, cmdline);
+            if(sigprocmask(SIG_UNBLOCK, &blocked, NULL) == -1) app_error("SIG_UNBLOCK Error");
+            printf("[%d] (%d) %s", pid2jid(pid), (int) pid, cmdline);
+        }
+    }
 }
 
 /* 
@@ -231,7 +277,23 @@ int parseline(const char *cmdline, char **argv)
  */
 int builtin_cmd(char **argv) 
 {
-    return 0;     /* not a builtin command */
+    char* name = argv[0]; 
+
+    if(strcmp(name, "quit") == 0){
+        /* quit terminates the shell */
+        exit(0);
+    }else if(strcmp(name, "jobs")==0){
+        /* jobs lists all background jobs */
+        listjobs(jobs);
+        return 1; // return true
+    }else if(strcmp(name, "bg")==0 || strcmp(name, "fg")==0){
+        /* bg <job> or fg <job> */
+        do_bgfg(argv);
+        return 1; // return true
+    } else{ 
+        /* not a builtin command */
+        return 0; // return false
+    }    
 }
 
 /* 
@@ -239,6 +301,56 @@ int builtin_cmd(char **argv)
  */
 void do_bgfg(char **argv) 
 {
+    // 0. Local Variable
+    struct job_t  *obj;
+
+    // Error Handling
+    // 1. bg or fg command 뒤에 아무 인자가 없을 경우
+    if(argv[1] == NULL){
+        printf("%s command requires PID or %%jobid argument\n", argv[0]);
+        return;
+    }
+
+    // 2. bg or fg command 뒤에 적절하지 않은 인자가 있을 경우
+    if(argv[1][0] != '%' && !isdigit(argv[1][0])){
+        printf("%s: argument must be a PID or %%jobid\n", argv[0]);
+        return;
+    }
+
+    // 3. Get Job Object
+    if(argv[1][0] == '%'){
+        // JobID
+        obj = getjobjid(jobs, atoi(&argv[1][1]));
+        if(obj == NULL){
+            printf("%s: No such job\n", argv[1]);
+            return;
+        }
+    } else{
+        // PID
+        obj = getjobpid(jobs, (pid_t) atoi(argv[1]));
+        if(obj == NULL){
+            printf("(%d): No such process\n", atoi(argv[1]));
+            return;
+        }   
+    }
+
+    // 4. Change the status of a stopped job
+    int bg = strcmp(argv[0], "bg") == 0 ? 1 : 0;
+    if(bg){
+        obj->state = BG;
+        printf("[%d] (%d) %s", obj->jid, obj->pid, obj->cmdline);
+        if(kill(-obj->pid, SIGCONT) == -1){
+            app_error("Kill Error");
+        } 
+    } else{
+        obj->state = FG;
+        if(kill(-obj->pid, SIGCONT) == -1){
+            app_error("Kill Error");
+        }
+        waitfg(obj->pid);
+    }
+   
+
     return;
 }
 
@@ -247,6 +359,10 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
+    while(1){
+        if(pid == fgpid(jobs))  sleep(1);
+        else break;
+    }
     return;
 }
 
@@ -263,6 +379,30 @@ void waitfg(pid_t pid)
  */
 void sigchld_handler(int sig) 
 {
+    int child_status;
+    pid_t pid;
+    int jobid;
+
+    // Reap Child
+    while((pid = waitpid(-1, &child_status, WNOHANG | WUNTRACED)) > 0){
+        jobid = pid2jid(pid);
+
+        if(WIFEXITED(child_status)){
+            // 일반적으로 종료된 경우 - 미출력 (SIGCHLD의 default behavior는 ignore)
+            deletejob(jobs, pid);
+        } else if(WIFSIGNALED(child_status)){
+            // SIGNAL에 의해 종료된 경우 - 출력 
+            deletejob(jobs, pid);
+            printf("Job [%d] (%d) terminated by signal %d\n", jobid, (int) pid, WTERMSIG(child_status));
+
+
+        } else if(WIFSTOPPED(child_status)){
+            struct job_t  *obj = getjobpid(jobs, pid);
+            obj->state = ST;
+            printf("Job [%d] (%d) stopped by signal %d\n", jobid, (int) pid, WSTOPSIG(child_status));
+        }
+    }
+
     return;
 }
 
@@ -273,6 +413,9 @@ void sigchld_handler(int sig)
  */
 void sigint_handler(int sig) 
 {
+    pid_t pid = fgpid(jobs); // Foreground job
+
+    if(pid != 0) kill(-pid, sig);
     return;
 }
 
@@ -283,6 +426,8 @@ void sigint_handler(int sig)
  */
 void sigtstp_handler(int sig) 
 {
+    pid_t pid = fgpid(jobs); // Foreground job
+    if(pid != 0) kill(-pid, sig);
     return;
 }
 
@@ -491,7 +636,7 @@ handler_t *Signal(int signum, handler_t *handler)
     action.sa_flags = SA_RESTART; /* restart syscalls if possible */
 
     if (sigaction(signum, &action, &old_action) < 0)
-	unix_error("Signal error");
+	    unix_error("Signal error");
     return (old_action.sa_handler);
 }
 
